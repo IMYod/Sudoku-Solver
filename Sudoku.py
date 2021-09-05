@@ -38,30 +38,97 @@ class Board:
 
     @staticmethod
     def neighbours(rc: RC):
-        res = list()
-        # row
-        res.extend([RC(rc.r, i) for i in range(9)])
-        # column
-        res.extend([RC(i, rc.c) for i in range(9)])
-        # box
-        box_corner = RC(((rc.r)//3)*3, ((rc.c)//3)*3)
-        res.extend([RC(box_corner.r + i, box_corner.c + j) for i in range(3) for j in range(3)])
-        return set(res)
+        res = set([RC(rc.r, i) for i in range(9)])     # row
+        res.update([RC(i, rc.c) for i in range(9)])     # column
+        res.update(Board.box_within(rc))    # box
+        res.remove(rc)
+        return res
+
+    @staticmethod
+    def row_within(rc: RC):
+        return [RC(rc.r, i) for i in range(9)]
+
+    @staticmethod
+    def column_within(rc: RC):
+        return [RC(i, rc.c) for i in range(9)]
+
+    @staticmethod
+    def box_within(rc: RC):
+        rc_box_num = RC(rc.r // 3, rc.c // 3)
+        box_corner = RC(3 * rc_box_num.r, rc_box_num.c * 3)
+        return [RC(box_corner.r + i, box_corner.c + j) for i in range(3) for j in range(3)]
+
+class NumsForPosition():
+    def __init__(self):
+        super().__init__()
+        self.board = Board()
+        self.possible = True
+        self.implication = dict()
+        for r in range(9):
+            for c in range(9):
+                rc = RC(r, c)
+                self.board[rc] = [i for i in range(1, 10)]
+
+    def positions_for_num_in_unit(self, num: int, unit):
+        return [rc for rc in unit if num in self.board[rc]]
+
+    def __setitem__(self, key: RC, value: int):
+        if value not in self.board[key]:
+            self.possible = False
+            return
+
+        # Remove value from neighbours
+        for neighbour_rc in Board.neighbours(key):
+            self.remove_val(neighbour_rc, value)
+
+        # Remove other values from key
+        for other_val in self.board[key]:
+            if other_val != value:
+                self.remove_val(key, other_val)
+
+        # Remove value from key
+        self.board[key] = []
+        del self.implication[key]
+
+    def remove_val(self, rc: RC, value: int):
+        if value not in self.board[rc]:
+            return
+        self.board[rc].remove(value)
+
+        if len(self.board[rc]) == 0:
+            self.possible = False
+            return
+        if len(self.board[rc]) == 1:
+            self.implication[rc] = self.board[rc][0]
+
+        for unit in [Board.row_within(rc), Board.column_within(rc), Board.box_within(rc)]:
+            unit_options = self.positions_for_num_in_unit(value, unit)
+            if len(unit_options) == 0:
+                self.possible = False
+                return
+            if len(unit_options) == 1:
+                self.implication[unit_options[0]] = value
+
+    """Find the cell with the minimum number of options"""
+    def shortest(self):
+        shortest_rc = None
+        shortest_length = 9
+        for i in range(9):
+            for j in range(9):
+                rc = RC(i, j)
+                if len(self.board[rc]) < shortest_length and len(self.board[rc]) >= 2:
+                    shortest_length = len(self.board[rc])
+                    shortest_rc = RC(i, j)
+        return shortest_rc, self.board[shortest_rc]
 
 class Sudoku:
     def __init__(self):
         # List of possible values for each cell in the board
-        self.options = Board()
+        self.options = NumsForPosition()
         # List of values already selected
-        self.const = Board()
+        self.result = Board()
         # The number of values already selected
         self.counter = 0
-
-        for r in range(9):
-            for c in range(9):
-                rc = RC(r, c)
-                self.options[rc] = [i for i in range(1, 10)]
-                self.const[rc] = False
 
     def set_board(self, board: Board):
         for r in range(9):
@@ -72,37 +139,23 @@ class Sudoku:
                     self[rc] = num
 
     def __setitem__(self, key: RC, value: int):
-        # For neighbour_rc in self.options.neighbours_rc(key):
-        for neighbour_rc in Board.neighbours(key):
-            try:
-                self.options[neighbour_rc].remove(value)
-            except ValueError:
-                pass  # do nothing!
+        self.options[key] = value
+        self.result[key] = value
+        self.counter += 1
 
-        if not self.const[key]:
-            self.counter += 1
-        self.const[key] = True
-        self.options[key] = [value]
+    def possible(self):
+        return self.options.possible
 
-    """Find the cell with the minimum number of options"""
-    def shortest(self):
-        shortest_rc = None
-        shortest_length = 9
-        for i in range(9):
-            for j in range(9):
-                rc = RC(i, j)
-                if (not self.const[rc]) and len(self.options[rc]) < shortest_length:
-                    shortest_length = len(self.options[rc])
-                    shortest_rc = RC(i, j)
-        return shortest_rc, self.options[shortest_rc]
+    def has_next(self):
+        return len(self.options.implication) > 0
+
+    def set_next(self):
+        next_step = next((x, self.options.implication[x]) for x in self.options.implication)
+        self[next_step[0]] = next_step[1]
 
     def is_solved(self):
         return self.counter == 81
 
-    def to_board(self):
-        res = Board()
-        res.board = [[self.options[RC(r, c)][0] for c in range(9)] for r in range(9)]
-        return res
 
 class BFS:
     class Node:
@@ -112,7 +165,7 @@ class BFS:
             self.current_index = -1
 
         def optional_values(self):
-            return self.sudoku.options[self.rc]
+            return self.sudoku.options.board[self.rc]
 
         def current_val(self):
             return self.optional_values()[self.current_index]
@@ -145,31 +198,32 @@ class BFS:
     def search(self, sudoku):
         self.current = copyOf(sudoku)
         while True:
-            shortest_rc, shortest_options = self.current.shortest()
-            if len(shortest_options) == 1:  # The only option
-                self.current[shortest_rc] = shortest_options[0]
-            elif len(shortest_options) == 0:    # No solution
+            if self.current.possible():
+                if self.current.has_next():  # The only option
+                    self.current.set_next()
+                else:
+                    shortest_rc, shortest_options = self.current.options.shortest()
+                    self.add_node(self.current, shortest_rc)  # Many options, drop level in the search tree
+                    self.next()
+            else:
                 if not self.next():
                     return None     # No solution!
-            else:
-                self.add_node(self.current, shortest_rc)    # Many options, drop level in the search tree
-                self.next()
 
             if self.current.is_solved():
-                return self.current.to_board()
+                return self.current.result
 
 
 """Example:"""
 
-input = [[3,0,0,0,0,0,0,2,0],
-         [0,0,0,0,0,0,9,6,4],
-         [2,0,8,0,0,0,0,5,0],
-         [1,7,0,0,8,0,0,0,0],
-         [0,0,0,2,0,0,0,0,7],
-         [0,0,0,0,5,0,4,0,0],
-         [0,0,9,0,0,0,0,0,0],
-         [0,0,6,0,0,4,0,0,5],
-         [0,2,0,9,0,6,0,0,0]]
+input = [[3,4,0,0,0,1,0,0,0],
+         [0,2,0,0,0,9,0,0,0],
+         [0,0,0,5,0,0,0,7,0],
+         [0,0,0,0,0,3,1,0,7],
+         [6,8,0,0,0,0,3,0,2],
+         [0,0,0,0,0,0,0,6,0],
+         [0,0,8,0,7,4,0,1,0],
+         [0,0,0,0,0,0,0,0,0],
+         [0,0,9,0,0,0,6,8,5]]
 
 values_board = Board()
 values_board.board = input
